@@ -18,7 +18,6 @@
 package kafka.server
 
 import kafka.cluster.Partition
-import kafka.coordinator.group.GroupCoordinator
 import kafka.coordinator.transaction.TransactionCoordinator
 import kafka.network.RequestChannel
 import kafka.server.QuotaFactory.QuotaManagers
@@ -27,6 +26,10 @@ import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.network.Send
 import org.apache.kafka.common.requests.{AbstractRequest, AbstractResponse}
 import org.apache.kafka.common.utils.Time
+import org.apache.kafka.coordinator.group.GroupCoordinator
+import org.apache.kafka.server.quota.ThrottleCallback
+
+import java.util.OptionalInt
 
 object RequestHandlerHelper {
 
@@ -46,7 +49,7 @@ object RequestHandlerHelper {
 
     updatedFollowers.foreach { partition =>
       if (partition.topic == Topic.GROUP_METADATA_TOPIC_NAME)
-        groupCoordinator.onResignation(partition.partitionId, Some(partition.getLeaderEpoch))
+        groupCoordinator.onResignation(partition.partitionId, OptionalInt.of(partition.getLeaderEpoch))
       else if (partition.topic == Topic.TRANSACTION_STATE_TOPIC_NAME)
         txnCoordinator.onResignation(partition.partitionId, Some(partition.getLeaderEpoch))
     }
@@ -80,7 +83,7 @@ class RequestHandlerHelper(
       sendErrorResponseExemptThrottle(request, e)
   }
 
-  def sendErrorOrCloseConnection(
+  private def sendErrorOrCloseConnection(
     request: RequestChannel.Request,
     error: Throwable,
     throttleMs: Int
@@ -107,6 +110,18 @@ class RequestHandlerHelper(
 
   // Throttle the channel if the request quota is enabled but has been violated. Regardless of throttling, send the
   // response immediately.
+  def sendMaybeThrottle(
+    request: RequestChannel.Request,
+    response: AbstractResponse
+  ): Unit = {
+    val throttleTimeMs = maybeRecordAndGetThrottleTimeMs(request)
+    // Only throttle non-forwarded requests
+    if (!request.isForwarded)
+      throttle(quotas.request, request, throttleTimeMs)
+    response.maybeSetThrottleTimeMs(throttleTimeMs)
+    requestChannel.sendResponse(request, response, None)
+  }
+
   def sendResponseMaybeThrottle(request: RequestChannel.Request,
                                 createResponse: Int => AbstractResponse): Unit = {
     val throttleTimeMs = maybeRecordAndGetThrottleTimeMs(request)
@@ -134,9 +149,11 @@ class RequestHandlerHelper(
    * Throttle the channel if the controller mutations quota or the request quota have been violated.
    * Regardless of throttling, send the response immediately.
    */
-  def sendResponseMaybeThrottleWithControllerQuota(controllerMutationQuota: ControllerMutationQuota,
-                                                   request: RequestChannel.Request,
-                                                   createResponse: Int => AbstractResponse): Unit = {
+  def sendResponseMaybeThrottleWithControllerQuota(
+    controllerMutationQuota: ControllerMutationQuota,
+    request: RequestChannel.Request,
+    response: AbstractResponse
+  ): Unit = {
     val timeMs = time.milliseconds
     val controllerThrottleTimeMs = controllerMutationQuota.throttleTime
     val requestThrottleTimeMs = quotas.request.maybeRecordAndGetThrottleTimeMs(request, timeMs)
@@ -151,7 +168,8 @@ class RequestHandlerHelper(
       }
     }
 
-    requestChannel.sendResponse(request, createResponse(maxThrottleTimeMs), None)
+    response.maybeSetThrottleTimeMs(maxThrottleTimeMs)
+    requestChannel.sendResponse(request, response, None)
   }
 
   def sendResponseExemptThrottle(request: RequestChannel.Request,
@@ -161,7 +179,7 @@ class RequestHandlerHelper(
     requestChannel.sendResponse(request, response, onComplete)
   }
 
-  def sendErrorResponseExemptThrottle(request: RequestChannel.Request, error: Throwable): Unit = {
+  private def sendErrorResponseExemptThrottle(request: RequestChannel.Request, error: Throwable): Unit = {
     quotas.request.maybeRecordExempt(request)
     sendErrorOrCloseConnection(request, error, 0)
   }

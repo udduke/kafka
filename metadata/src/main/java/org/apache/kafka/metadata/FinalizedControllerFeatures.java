@@ -40,8 +40,16 @@ public class FinalizedControllerFeatures {
         return Optional.ofNullable(featureMap.get(name));
     }
 
+    public short versionOrDefault(String name, short defaultValue) {
+        return featureMap.getOrDefault(name, defaultValue);
+    }
+
     public Set<String> featureNames() {
         return featureMap.keySet();
+    }
+
+    public Map<String, Short> featureMap() {
+        return featureMap;
     }
 
     public long epoch() {
@@ -62,11 +70,9 @@ public class FinalizedControllerFeatures {
 
     @Override
     public String toString() {
-        StringBuilder bld = new StringBuilder();
-        bld.append("{");
-        bld.append("featureMap=").append(featureMap.toString());
-        bld.append(", epoch=").append(epoch);
-        bld.append("}");
-        return bld.toString();
+        return "FinalizedControllerFeatures(" +
+                "featureMap=" + featureMap.toString() +
+                ", epoch=" + epoch +
+                ")";
     }
 }

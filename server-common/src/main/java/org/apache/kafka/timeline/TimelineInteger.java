@@ -22,10 +22,10 @@ import java.util.Iterator;
 
 /**
  * This is a mutable integer which can be snapshotted. 
- *
+ * <br>
  * This class requires external synchronization.
  */
-public class TimelineInteger implements Revertable {
+public final class TimelineInteger implements Revertable {
     public static final int INIT = 0;
 
     static class IntegerContainer implements Delta {
@@ -92,7 +92,6 @@ public class TimelineInteger implements Revertable {
         set(get() - 1);
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public void executeRevert(long targetEpoch, Delta delta) {
         IntegerContainer container = (IntegerContainer) delta;

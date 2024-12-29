@@ -24,6 +24,7 @@ import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.metadata.ConfigRecord;
 import org.apache.kafka.common.requests.DescribeConfigsResponse;
+import org.apache.kafka.server.config.ConfigSynonym;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -158,10 +159,10 @@ public class KafkaConfigSchema {
     }
 
     public Map<String, ConfigEntry> resolveEffectiveTopicConfigs(
-            Map<String, ? extends Object> staticNodeConfig,
-            Map<String, ? extends Object> dynamicClusterConfigs,
-            Map<String, ? extends Object> dynamicNodeConfigs,
-            Map<String, ? extends Object> dynamicTopicConfigs) {
+            Map<String, ?> staticNodeConfig,
+            Map<String, ?> dynamicClusterConfigs,
+            Map<String, ?> dynamicNodeConfigs,
+            Map<String, ?> dynamicTopicConfigs) {
         ConfigDef configDef = configDefs.getOrDefault(ConfigResource.Type.TOPIC, EMPTY_CONFIG_DEF);
         HashMap<String, ConfigEntry> effectiveConfigs = new HashMap<>();
         for (ConfigDef.ConfigKey configKey : configDef.configKeys().values()) {
@@ -172,11 +173,29 @@ public class KafkaConfigSchema {
         return effectiveConfigs;
     }
 
-    private ConfigEntry resolveEffectiveTopicConfig(ConfigDef.ConfigKey configKey,
-            Map<String, ? extends Object> staticNodeConfig,
-            Map<String, ? extends Object> dynamicClusterConfigs,
-            Map<String, ? extends Object> dynamicNodeConfigs,
-            Map<String, ? extends Object> dynamicTopicConfigs) {
+    public ConfigEntry resolveEffectiveTopicConfig(
+        String keyName,
+        Map<String, ?> staticNodeConfig,
+        Map<String, ?> dynamicClusterConfigs,
+        Map<String, ?> dynamicNodeConfigs,
+        Map<String, ?> dynamicTopicConfigs
+    ) {
+        ConfigDef configDef = configDefs.getOrDefault(ConfigResource.Type.TOPIC, EMPTY_CONFIG_DEF);
+        ConfigDef.ConfigKey configKey = configDef.configKeys().get(keyName);
+        return resolveEffectiveTopicConfig(configKey,
+            staticNodeConfig,
+            dynamicClusterConfigs,
+            dynamicNodeConfigs,
+            dynamicTopicConfigs);
+    }
+
+    public ConfigEntry resolveEffectiveTopicConfig(
+        ConfigDef.ConfigKey configKey,
+        Map<String, ?> staticNodeConfig,
+        Map<String, ?> dynamicClusterConfigs,
+        Map<String, ?> dynamicNodeConfigs,
+        Map<String, ?> dynamicTopicConfigs
+    ) {
         if (dynamicTopicConfigs.containsKey(configKey.name)) {
             return toConfigEntry(configKey,
                 dynamicTopicConfigs.get(configKey.name),
@@ -209,7 +228,7 @@ public class KafkaConfigSchema {
                                       Object value,
                                       ConfigSource source,
                                       Function<String, String> converter) {
-        // Convert the value into a nulllable string suitable for storing in ConfigEntry.
+        // Convert the value into a nullable string suitable for storing in ConfigEntry.
         String stringValue = null;
         if (value != null) {
             if (value instanceof String) {

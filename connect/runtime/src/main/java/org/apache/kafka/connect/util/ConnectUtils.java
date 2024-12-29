@@ -25,10 +25,12 @@ import org.apache.kafka.connect.runtime.WorkerConfig;
 import org.apache.kafka.connect.runtime.distributed.DistributedConfig;
 import org.apache.kafka.connect.sink.SinkConnector;
 import org.apache.kafka.connect.source.SourceConnector;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -118,6 +120,14 @@ public final class ConnectUtils {
         ));
     }
 
+    /**
+     * Adds Connect metrics context properties.
+     * @param prop the properties map to which the metrics context properties are to be added
+     * @param config the worker config
+     * @param clusterId the Connect cluster's backing Kafka cluster ID
+     *
+     * @see <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-606%3A+Add+Metadata+Context+to+MetricsReporter">KIP-606</a>
+     */
     public static void addMetricsContextProperties(Map<String, Object> prop, WorkerConfig config, String clusterId) {
         //add all properties predefined with "metrics.context."
         prop.putAll(config.originalsWithPrefix(CommonClientConfigs.METRICS_CONTEXT_PREFIX, false));
@@ -137,6 +147,15 @@ public final class ConnectUtils {
         return SourceConnector.class.isAssignableFrom(connector.getClass());
     }
 
+    /**
+     * Apply a specified transformation {@link Function} to every value in a Map.
+     * @param map the Map to be transformed
+     * @param transformation the transformation function
+     * @return the transformed Map
+     * @param <K> the key type
+     * @param <I> the pre-transform value type
+     * @param <O> the post-transform value type
+     */
     public static <K, I, O> Map<K, O> transformValues(Map<K, I> map, Function<I, O> transformation) {
         return map.entrySet().stream().collect(Collectors.toMap(
                 Map.Entry::getKey,
@@ -187,9 +206,42 @@ public final class ConnectUtils {
         String result = Optional.ofNullable(config.groupId())
                 .orElse("connect");
         String userSpecifiedClientId = config.getString(CLIENT_ID_CONFIG);
-        if (userSpecifiedClientId != null) {
+        if (userSpecifiedClientId != null && !userSpecifiedClientId.trim().isEmpty()) {
             result += "-" + userSpecifiedClientId;
         }
         return result + "-";
+    }
+
+    /**
+     * Get the class name for an object in a null-safe manner.
+     * @param o the object whose class name is to be returned
+     * @return "null" if the object is null; or else the object's class name
+     */
+    public static String className(Object o) {
+        return o != null ? o.getClass().getName() : "null";
+    }
+
+    /**
+     * Apply a patch on a connector config.
+     *
+     * <p>In the output, the values from the patch will override the values from the config.
+     * {@code null} values will cause the corresponding key to be removed completely.
+     * @param config the config to be patched.
+     * @param patch the patch.
+     * @return the output config map.
+     */
+    public static Map<String, String> patchConfig(
+            Map<String, String> config,
+            Map<String, String> patch
+    ) {
+        Map<String, String> result = new HashMap<>(config);
+        patch.forEach((k, v) -> {
+            if (v != null) {
+                result.put(k, v);
+            } else {
+                result.remove(k);
+            }
+        });
+        return result;
     }
 }

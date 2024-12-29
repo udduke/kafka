@@ -27,9 +27,9 @@ import java.util.Set;
 
 /**
  * This is a hash map which can be snapshotted.
- *
- * See {@SnapshottableHashTable} for more details about the implementation.
- *
+ * <br>
+ * See {@link SnapshottableHashTable} for more details about the implementation.
+ * <br>
  * This class requires external synchronization.  Null keys and values are not supported.
  *
  * @param <K>   The key type of the set.
@@ -127,9 +127,7 @@ public class TimelineHashMap<K, V>
 
     @Override
     public boolean containsValue(Object value) {
-        Iterator<Entry<K, V>> iter = entrySet().iterator();
-        while (iter.hasNext()) {
-            Entry<K, V> e = iter.next();
+        for (Entry<K, V> e : entrySet()) {
             if (value.equals(e.getValue())) {
                 return true;
             }
@@ -189,26 +187,26 @@ public class TimelineHashMap<K, V>
             this.epoch = epoch;
         }
 
-        public final int size() {
+        public int size() {
             return TimelineHashMap.this.size(epoch);
         }
 
-        public final void clear() {
+        public void clear() {
             if (epoch != SnapshottableHashTable.LATEST_EPOCH) {
                 throw new RuntimeException("can't modify snapshot");
             }
             TimelineHashMap.this.clear();
         }
 
-        public final Iterator<K> iterator() {
+        public Iterator<K> iterator() {
             return new KeyIterator(epoch);
         }
 
-        public final boolean contains(Object o) {
+        public boolean contains(Object o) {
             return TimelineHashMap.this.containsKey(o, epoch);
         }
 
-        public final boolean remove(Object o) {
+        public boolean remove(Object o) {
             if (epoch != SnapshottableHashTable.LATEST_EPOCH) {
                 throw new RuntimeException("can't modify snapshot");
             }
@@ -256,22 +254,22 @@ public class TimelineHashMap<K, V>
             this.epoch = epoch;
         }
 
-        public final int size() {
+        public int size() {
             return TimelineHashMap.this.size(epoch);
         }
 
-        public final void clear() {
+        public void clear() {
             if (epoch != SnapshottableHashTable.LATEST_EPOCH) {
                 throw new RuntimeException("can't modify snapshot");
             }
             TimelineHashMap.this.clear();
         }
 
-        public final Iterator<V> iterator() {
+        public Iterator<V> iterator() {
             return new ValueIterator(epoch);
         }
 
-        public final boolean contains(Object o) {
+        public boolean contains(Object o) {
             return TimelineHashMap.this.containsKey(o, epoch);
         }
     }
@@ -316,26 +314,26 @@ public class TimelineHashMap<K, V>
             this.epoch = epoch;
         }
 
-        public final int size() {
+        public int size() {
             return TimelineHashMap.this.size(epoch);
         }
 
-        public final void clear() {
+        public void clear() {
             if (epoch != SnapshottableHashTable.LATEST_EPOCH) {
                 throw new RuntimeException("can't modify snapshot");
             }
             TimelineHashMap.this.clear();
         }
 
-        public final Iterator<Map.Entry<K, V>> iterator() {
+        public Iterator<Map.Entry<K, V>> iterator() {
             return new EntryIterator(epoch);
         }
 
-        public final boolean contains(Object o) {
+        public boolean contains(Object o) {
             return snapshottableGet(o, epoch) != null;
         }
 
-        public final boolean remove(Object o) {
+        public boolean remove(Object o) {
             if (epoch != SnapshottableHashTable.LATEST_EPOCH) {
                 throw new RuntimeException("can't modify snapshot");
             }
@@ -378,9 +376,8 @@ public class TimelineHashMap<K, V>
     @Override
     public int hashCode() {
         int hash = 0;
-        Iterator<Entry<K, V>> iter = entrySet().iterator();
-        while (iter.hasNext()) {
-            hash += iter.next().hashCode();
+        for (Entry<K, V> kvEntry : entrySet()) {
+            hash += kvEntry.hashCode();
         }
         return hash;
     }
@@ -395,9 +392,7 @@ public class TimelineHashMap<K, V>
         if (m.size() != size())
             return false;
         try {
-            Iterator<Entry<K, V>> iter = entrySet().iterator();
-            while (iter.hasNext()) {
-                Entry<K, V> entry = iter.next();
+            for (Entry<K, V> entry : entrySet()) {
                 if (!m.get(entry.getKey()).equals(entry.getValue())) {
                     return false;
                 }

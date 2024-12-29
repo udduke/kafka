@@ -20,8 +20,8 @@ package org.apache.kafka.controller;
 import org.apache.kafka.clients.admin.AlterConfigOp.OpType;
 import org.apache.kafka.clients.admin.ConfigEntry;
 import org.apache.kafka.common.config.ConfigException;
-import org.apache.kafka.common.config.ConfigResource.Type;
 import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.config.ConfigResource.Type;
 import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.metadata.ConfigRecord;
 import org.apache.kafka.common.protocol.Errors;
@@ -29,17 +29,18 @@ import org.apache.kafka.common.requests.ApiError;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.metadata.KafkaConfigSchema;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
+import org.apache.kafka.server.mutable.BoundedList;
 import org.apache.kafka.server.policy.AlterConfigPolicy;
 import org.apache.kafka.server.policy.AlterConfigPolicy.RequestMetadata;
 import org.apache.kafka.timeline.SnapshotRegistry;
 import org.apache.kafka.timeline.TimelineHashMap;
+
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -49,7 +50,9 @@ import java.util.Optional;
 import java.util.function.Consumer;
 
 import static org.apache.kafka.clients.admin.AlterConfigOp.OpType.APPEND;
+import static org.apache.kafka.common.config.TopicConfig.UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG;
 import static org.apache.kafka.common.protocol.Errors.INVALID_CONFIG;
+import static org.apache.kafka.controller.QuorumController.MAX_RECORDS_PER_USER_OP;
 
 
 public class ConfigurationControlManager {
@@ -68,7 +71,7 @@ public class ConfigurationControlManager {
     static class Builder {
         private LogContext logContext = null;
         private SnapshotRegistry snapshotRegistry = null;
-        private KafkaConfigSchema configSchema = KafkaConfigSchema.EMPTY;
+        private KafkaConfigSchema configSchema = null;
         private Consumer<ConfigResource> existenceChecker = __ -> { };
         private Optional<AlterConfigPolicy> alterConfigPolicy = Optional.empty();
         private ConfigurationValidator validator = ConfigurationValidator.NO_OP;
@@ -118,6 +121,9 @@ public class ConfigurationControlManager {
         ConfigurationControlManager build() {
             if (logContext == null) logContext = new LogContext();
             if (snapshotRegistry == null) snapshotRegistry = new SnapshotRegistry(logContext);
+            if (configSchema == null) {
+                throw new RuntimeException("You must set the configSchema.");
+            }
             return new ConfigurationControlManager(
                 logContext,
                 snapshotRegistry,
@@ -167,26 +173,43 @@ public class ConfigurationControlManager {
      * @return                  The result.
      */
     ControllerResult<Map<ConfigResource, ApiError>> incrementalAlterConfigs(
-            Map<ConfigResource, Map<String, Entry<OpType, String>>> configChanges,
-            boolean newlyCreatedResource) {
-        List<ApiMessageAndVersion> outputRecords = new ArrayList<>();
+        Map<ConfigResource, Map<String, Entry<OpType, String>>> configChanges,
+        boolean newlyCreatedResource
+    ) {
+        List<ApiMessageAndVersion> outputRecords =
+                BoundedList.newArrayBacked(MAX_RECORDS_PER_USER_OP);
         Map<ConfigResource, ApiError> outputResults = new HashMap<>();
         for (Entry<ConfigResource, Map<String, Entry<OpType, String>>> resourceEntry :
                 configChanges.entrySet()) {
-            incrementalAlterConfigResource(resourceEntry.getKey(),
+            ApiError apiError = incrementalAlterConfigResource(resourceEntry.getKey(),
                 resourceEntry.getValue(),
                 newlyCreatedResource,
-                outputRecords,
-                outputResults);
+                outputRecords);
+            outputResults.put(resourceEntry.getKey(), apiError);
         }
         return ControllerResult.atomicOf(outputRecords, outputResults);
     }
 
-    private void incrementalAlterConfigResource(ConfigResource configResource,
-                                                Map<String, Entry<OpType, String>> keysToOps,
-                                                boolean newlyCreatedResource,
-                                                List<ApiMessageAndVersion> outputRecords,
-                                                Map<ConfigResource, ApiError> outputResults) {
+    ControllerResult<ApiError> incrementalAlterConfig(
+        ConfigResource configResource,
+        Map<String, Entry<OpType, String>> keyToOps,
+        boolean newlyCreatedResource
+    ) {
+        List<ApiMessageAndVersion> outputRecords =
+                BoundedList.newArrayBacked(MAX_RECORDS_PER_USER_OP);
+        ApiError apiError = incrementalAlterConfigResource(configResource,
+            keyToOps,
+            newlyCreatedResource,
+            outputRecords);
+        return ControllerResult.atomicOf(outputRecords, apiError);
+    }
+
+    private ApiError incrementalAlterConfigResource(
+        ConfigResource configResource,
+        Map<String, Entry<OpType, String>> keysToOps,
+        boolean newlyCreatedResource,
+        List<ApiMessageAndVersion> outputRecords
+    ) {
         List<ApiMessageAndVersion> newRecords = new ArrayList<>();
         for (Entry<String, Entry<OpType, String>> keysToOpsEntry : keysToOps.entrySet()) {
             String key = keysToOpsEntry.getKey();
@@ -209,10 +232,9 @@ public class ConfigurationControlManager {
                 case APPEND:
                 case SUBTRACT:
                     if (!configSchema.isSplittable(configResource.type(), key)) {
-                        outputResults.put(configResource, new ApiError(
+                        return new ApiError(
                             INVALID_CONFIG, "Can't " + opType + " to " +
-                            "key " + key + " because its type is not LIST."));
-                        return;
+                            "key " + key + " because its type is not LIST.");
                     }
                     List<String> oldValueList = getParts(newValue, key, configResource);
                     if (opType == APPEND) {
@@ -240,11 +262,10 @@ public class ConfigurationControlManager {
         }
         ApiError error = validateAlterConfig(configResource, newRecords, Collections.emptyList(), newlyCreatedResource);
         if (error.isFailure()) {
-            outputResults.put(configResource, error);
-            return;
+            return error;
         }
         outputRecords.addAll(newRecords);
-        outputResults.put(configResource, ApiError.NONE);
+        return ApiError.NONE;
     }
 
     private ApiError validateAlterConfig(ConfigResource configResource,
@@ -252,9 +273,13 @@ public class ConfigurationControlManager {
                                          List<ApiMessageAndVersion> recordsImplicitlyDeleted,
                                          boolean newlyCreatedResource) {
         Map<String, String> allConfigs = new HashMap<>();
+        Map<String, String> existingConfigsMap = new HashMap<>();
         Map<String, String> alteredConfigsForAlterConfigPolicyCheck = new HashMap<>();
-        TimelineHashMap<String, String> existingConfigs = configData.get(configResource);
-        if (existingConfigs != null) allConfigs.putAll(existingConfigs);
+        TimelineHashMap<String, String> existingConfigsSnapshot = configData.get(configResource);
+        if (existingConfigsSnapshot != null) {
+            allConfigs.putAll(existingConfigsSnapshot);
+            existingConfigsMap.putAll(existingConfigsSnapshot);
+        }
         for (ApiMessageAndVersion newRecord : recordsExplicitlyAltered) {
             ConfigRecord configRecord = (ConfigRecord) newRecord.message();
             if (configRecord.value() == null) {
@@ -271,7 +296,7 @@ public class ConfigurationControlManager {
             // in the list passed to the policy in order to maintain backwards compatibility
         }
         try {
-            validator.validate(configResource, allConfigs);
+            validator.validate(configResource, allConfigs, existingConfigsMap);
             if (!newlyCreatedResource) {
                 existenceChecker.accept(configResource);
             }
@@ -304,7 +329,8 @@ public class ConfigurationControlManager {
         Map<ConfigResource, Map<String, String>> newConfigs,
         boolean newlyCreatedResource
     ) {
-        List<ApiMessageAndVersion> outputRecords = new ArrayList<>();
+        List<ApiMessageAndVersion> outputRecords =
+                BoundedList.newArrayBacked(MAX_RECORDS_PER_USER_OP);
         Map<ConfigResource, ApiError> outputResults = new HashMap<>();
         for (Entry<ConfigResource, Map<String, String>> resourceEntry :
             newConfigs.entrySet()) {
@@ -399,9 +425,11 @@ public class ConfigurationControlManager {
             configData.remove(configResource);
         }
         if (configSchema.isSensitive(record)) {
-            log.info("{}: set configuration {} to {}", configResource, record.name(), Password.HIDDEN);
+            log.info("Replayed ConfigRecord for {} which set configuration {} to {}",
+                    configResource, record.name(), Password.HIDDEN);
         } else {
-            log.info("{}: set configuration {} to {}", configResource, record.name(), record.value());
+            log.info("Replayed ConfigRecord for {} which set configuration {} to {}",
+                    configResource, record.name(), record.value());
         }
     }
 
@@ -413,6 +441,26 @@ public class ConfigurationControlManager {
         } else {
             return Collections.unmodifiableMap(new HashMap<>(map));
         }
+    }
+
+    /**
+     * Get the config value for the given topic and given config key.
+     * The check order is:
+     *   1. dynamic topic overridden configs
+     *   2. dynamic node overridden configs
+     *   3. dynamic cluster overridden configs
+     *   4. static configs
+     * If the config value is not found, return null.
+     *
+     * @param topicName            The topic name for the config.
+     * @param configKey            The key for the config.
+     * @return the config value for the provided config key in the topic
+     */
+    ConfigEntry getTopicConfig(String topicName, String configKey) throws NoSuchElementException {
+        return configSchema.resolveEffectiveTopicConfig(configKey,
+            staticConfig,
+            clusterConfig(),
+            currentControllerConfig(), currentTopicConfig(topicName));
     }
 
     public Map<ConfigResource, ResultOrError<Map<String, String>>> describeConfigs(
@@ -432,10 +480,7 @@ public class ConfigurationControlManager {
             if (configs != null) {
                 Collection<String> targetConfigs = resourceEntry.getValue();
                 if (targetConfigs.isEmpty()) {
-                    Iterator<Entry<String, String>> iter =
-                        configs.entrySet(lastCommittedOffset).iterator();
-                    while (iter.hasNext()) {
-                        Entry<String, String> entry = iter.next();
+                    for (Entry<String, String> entry : configs.entrySet(lastCommittedOffset)) {
                         foundConfigs.put(entry.getKey(), entry.getValue());
                     }
                 } else {
@@ -456,8 +501,19 @@ public class ConfigurationControlManager {
         configData.remove(new ConfigResource(Type.TOPIC, name));
     }
 
-    boolean uncleanLeaderElectionEnabledForTopic(String name) {
-        return false; // TODO: support configuring unclean leader election.
+    /**
+     * Check if this topic has "unclean.leader.election.enable" set to true.
+     *
+     * @param topicName            The topic name for the config.
+     * @return true if this topic has uncleanLeaderElection enabled
+     */
+    boolean uncleanLeaderElectionEnabledForTopic(String topicName) {
+        String uncleanLeaderElection = getTopicConfig(topicName, UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG).value();
+        if (!uncleanLeaderElection.isEmpty()) {
+            return Boolean.parseBoolean(uncleanLeaderElection);
+        }
+
+        return false;
     }
 
     Map<String, ConfigEntry> computeEffectiveTopicConfigs(Map<String, String> creationConfigs) {
@@ -475,38 +531,8 @@ public class ConfigurationControlManager {
         return (result == null) ? Collections.emptyMap() : result;
     }
 
-    class ConfigurationControlIterator implements Iterator<List<ApiMessageAndVersion>> {
-        private final long epoch;
-        private final Iterator<Entry<ConfigResource, TimelineHashMap<String, String>>> iterator;
-
-        ConfigurationControlIterator(long epoch) {
-            this.epoch = epoch;
-            this.iterator = configData.entrySet(epoch).iterator();
-        }
-
-        @Override
-        public boolean hasNext() {
-            return iterator.hasNext();
-        }
-
-        @Override
-        public List<ApiMessageAndVersion> next() {
-            if (!hasNext()) throw new NoSuchElementException();
-            List<ApiMessageAndVersion> records = new ArrayList<>();
-            Entry<ConfigResource, TimelineHashMap<String, String>> entry = iterator.next();
-            ConfigResource resource = entry.getKey();
-            for (Entry<String, String> configEntry : entry.getValue().entrySet(epoch)) {
-                records.add(new ApiMessageAndVersion(new ConfigRecord().
-                    setResourceName(resource.name()).
-                    setResourceType(resource.type().id()).
-                    setName(configEntry.getKey()).
-                    setValue(configEntry.getValue()), (short) 0));
-            }
-            return records;
-        }
-    }
-
-    ConfigurationControlIterator iterator(long epoch) {
-        return new ConfigurationControlIterator(epoch);
+    Map<String, String> currentTopicConfig(String topicName) {
+        Map<String, String> result = configData.get(new ConfigResource(Type.TOPIC, topicName));
+        return (result == null) ? Collections.emptyMap() : result;
     }
 }

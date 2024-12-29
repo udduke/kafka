@@ -16,13 +16,6 @@
  */
 package org.apache.kafka.tools;
 
-import net.sourceforge.argparse4j.ArgumentParsers;
-import net.sourceforge.argparse4j.inf.ArgumentGroup;
-import net.sourceforge.argparse4j.inf.ArgumentParser;
-import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.Namespace;
-import net.sourceforge.argparse4j.inf.Subparser;
-import net.sourceforge.argparse4j.inf.Subparsers;
 import org.apache.kafka.clients.admin.AbortTransactionSpec;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -41,13 +34,21 @@ import org.apache.kafka.common.errors.TransactionalIdNotFoundException;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
+
+import net.sourceforge.argparse4j.ArgumentParsers;
+import net.sourceforge.argparse4j.inf.ArgumentGroup;
+import net.sourceforge.argparse4j.inf.ArgumentParser;
+import net.sourceforge.argparse4j.inf.ArgumentParserException;
+import net.sourceforge.argparse4j.inf.Namespace;
+import net.sourceforge.argparse4j.inf.Subparser;
+import net.sourceforge.argparse4j.inf.Subparsers;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.PrintStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -63,10 +64,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static java.util.Arrays.asList;
 import static java.util.Collections.singleton;
 import static java.util.Collections.singletonList;
 import static net.sourceforge.argparse4j.impl.Arguments.store;
-import static org.apache.kafka.server.util.ToolsUtils.prettyPrintTable;
 
 public abstract class TransactionsCommand {
     private static final Logger log = LoggerFactory.getLogger(TransactionsCommand.class);
@@ -254,14 +255,14 @@ public abstract class TransactionsCommand {
     }
 
     static class DescribeProducersCommand extends TransactionsCommand {
-        static final String[] HEADERS = new String[]{
+        static final List<String> HEADERS = asList(
             "ProducerId",
             "ProducerEpoch",
             "LatestCoordinatorEpoch",
             "LastSequence",
             "LastTimestamp",
             "CurrentTransactionStartOffset"
-        };
+        );
 
         DescribeProducersCommand(Time time) {
             super(time);
@@ -320,28 +321,28 @@ public abstract class TransactionsCommand {
                 return;
             }
 
-            List<String[]> rows = result.activeProducers().stream().map(producerState -> {
+            List<List<String>> rows = result.activeProducers().stream().map(producerState -> {
                 String currentTransactionStartOffsetColumnValue =
                     producerState.currentTransactionStartOffset().isPresent() ?
                         String.valueOf(producerState.currentTransactionStartOffset().getAsLong()) :
                         "None";
 
-                return new String[] {
+                return asList(
                     String.valueOf(producerState.producerId()),
                     String.valueOf(producerState.producerEpoch()),
                     String.valueOf(producerState.coordinatorEpoch().orElse(-1)),
                     String.valueOf(producerState.lastSequence()),
                     String.valueOf(producerState.lastTimestamp()),
                     currentTransactionStartOffsetColumnValue
-                };
+                );
             }).collect(Collectors.toList());
 
-            prettyPrintTable(HEADERS, rows, out);
+            ToolsUtils.prettyPrintTable(HEADERS, rows, out);
         }
     }
 
     static class DescribeTransactionsCommand extends TransactionsCommand {
-        static final String[] HEADERS = new String[]{
+        static final List<String> HEADERS = asList(
             "CoordinatorId",
             "TransactionalId",
             "ProducerId",
@@ -351,7 +352,7 @@ public abstract class TransactionsCommand {
             "CurrentTransactionStartTimeMs",
             "TransactionDurationMs",
             "TopicPartitions"
-        };
+        );
 
         DescribeTransactionsCommand(Time time) {
             super(time);
@@ -402,7 +403,7 @@ public abstract class TransactionsCommand {
                 transactionDurationMsColumnValue = "None";
             }
 
-            String[] row = new String[]{
+            List<String> row = asList(
                 String.valueOf(result.coordinatorId()),
                 transactionalId,
                 String.valueOf(result.producerId()),
@@ -411,20 +412,20 @@ public abstract class TransactionsCommand {
                 String.valueOf(result.transactionTimeoutMs()),
                 transactionStartTimeMsColumnValue,
                 transactionDurationMsColumnValue,
-                Utils.join(result.topicPartitions(), ",")
-            };
+                result.topicPartitions().stream().map(TopicPartition::toString).collect(Collectors.joining(","))
+            );
 
-            prettyPrintTable(HEADERS, singletonList(row), out);
+            ToolsUtils.prettyPrintTable(HEADERS, singletonList(row), out);
         }
     }
 
     static class ListTransactionsCommand extends TransactionsCommand {
-        static final String[] HEADERS = new String[] {
+        static final List<String> HEADERS = asList(
             "TransactionalId",
             "Coordinator",
             "ProducerId",
             "TransactionState"
-        };
+        );
 
         ListTransactionsCommand(Time time) {
             super(time);
@@ -437,16 +438,26 @@ public abstract class TransactionsCommand {
 
         @Override
         public void addSubparser(Subparsers subparsers) {
-            subparsers.addParser(name())
+            Subparser subparser = subparsers.addParser(name())
                 .help("list transactions");
+
+            subparser.addArgument("--duration-filter")
+                    .help("Duration (in millis) to filter by: if < 0, all transactions will be returned; " +
+                            "otherwise, only transactions running longer than this duration will be returned")
+                    .action(store())
+                    .type(Long.class)
+                    .required(false);
         }
 
         @Override
         public void execute(Admin admin, Namespace ns, PrintStream out) throws Exception {
+            ListTransactionsOptions options = new ListTransactionsOptions();
+            Optional.ofNullable(ns.getLong("duration_filter")).ifPresent(options::filterOnDuration);
+
             final Map<Integer, Collection<TransactionListing>> result;
 
             try {
-                result = admin.listTransactions(new ListTransactionsOptions())
+                result = admin.listTransactions(options)
                     .allByBrokerId()
                     .get();
             } catch (ExecutionException e) {
@@ -454,29 +465,29 @@ public abstract class TransactionsCommand {
                 return;
             }
 
-            List<String[]> rows = new ArrayList<>();
+            List<List<String>> rows = new ArrayList<>();
             for (Map.Entry<Integer, Collection<TransactionListing>> brokerListingsEntry : result.entrySet()) {
                 String coordinatorIdString = brokerListingsEntry.getKey().toString();
                 Collection<TransactionListing> listings = brokerListingsEntry.getValue();
 
                 for (TransactionListing listing : listings) {
-                    rows.add(new String[] {
+                    rows.add(asList(
                         listing.transactionalId(),
                         coordinatorIdString,
                         String.valueOf(listing.producerId()),
                         listing.state().toString()
-                    });
+                    ));
                 }
             }
 
-            prettyPrintTable(HEADERS, rows, out);
+            ToolsUtils.prettyPrintTable(HEADERS, rows, out);
         }
     }
 
     static class FindHangingTransactionsCommand extends TransactionsCommand {
         private static final int MAX_BATCH_SIZE = 500;
 
-        static final String[] HEADERS = new String[] {
+        static final List<String> HEADERS = asList(
             "Topic",
             "Partition",
             "ProducerId",
@@ -485,7 +496,7 @@ public abstract class TransactionsCommand {
             "StartOffset",
             "LastTimestamp",
             "Duration(min)"
-        };
+        );
 
         FindHangingTransactionsCommand(Time time) {
             super(time);
@@ -653,13 +664,13 @@ public abstract class TransactionsCommand {
             PrintStream out
         ) {
             long currentTimeMs = time.milliseconds();
-            List<String[]> rows = new ArrayList<>(hangingTransactions.size());
+            List<List<String>> rows = new ArrayList<>(hangingTransactions.size());
 
             for (OpenTransaction transaction : hangingTransactions) {
                 long transactionDurationMinutes = TimeUnit.MILLISECONDS.toMinutes(
                     currentTimeMs - transaction.producerState.lastTimestamp());
 
-                rows.add(new String[] {
+                rows.add(asList(
                     transaction.topicPartition.topic(),
                     String.valueOf(transaction.topicPartition.partition()),
                     String.valueOf(transaction.producerState.producerId()),
@@ -668,10 +679,10 @@ public abstract class TransactionsCommand {
                     String.valueOf(transaction.producerState.currentTransactionStartOffset().orElse(-1)),
                     String.valueOf(transaction.producerState.lastTimestamp()),
                     String.valueOf(transactionDurationMinutes)
-                });
+                ));
             }
 
-            prettyPrintTable(HEADERS, rows, out);
+            ToolsUtils.prettyPrintTable(HEADERS, rows, out);
         }
 
         private Map<String, TransactionDescription> describeTransactions(
@@ -974,7 +985,7 @@ public abstract class TransactionsCommand {
         PrintStream out,
         Time time
     ) throws Exception {
-        List<TransactionsCommand> commands = Arrays.asList(
+        List<TransactionsCommand> commands = asList(
             new ListTransactionsCommand(time),
             new DescribeTransactionsCommand(time),
             new DescribeProducersCommand(time),

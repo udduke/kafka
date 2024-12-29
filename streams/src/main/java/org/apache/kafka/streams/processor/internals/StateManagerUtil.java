@@ -16,10 +16,6 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import java.io.IOException;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
-
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.errors.LockException;
@@ -31,11 +27,17 @@ import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.internals.Task.TaskType;
 import org.apache.kafka.streams.state.internals.RecordConverter;
+
 import org.slf4j.Logger;
+
+import java.io.IOException;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.kafka.streams.state.internals.RecordConverters.identity;
 import static org.apache.kafka.streams.state.internals.RecordConverters.rawValueToTimestampedValue;
 import static org.apache.kafka.streams.state.internals.WrappedStateStore.isTimestamped;
+import static org.apache.kafka.streams.state.internals.WrappedStateStore.isVersioned;
 
 /**
  * Shared functions to handle state store registration and cleanup between
@@ -48,7 +50,9 @@ final class StateManagerUtil {
     private StateManagerUtil() {}
 
     static RecordConverter converterForStore(final StateStore store) {
-        return isTimestamped(store) ? rawValueToTimestampedValue() : identity();
+        // should not prepend timestamp when restoring records for versioned store, as
+        // timestamp is used separately during put() process for restore of versioned stores
+        return (isTimestamped(store) && !isVersioned(store)) ? rawValueToTimestampedValue() : identity();
     }
 
     static boolean checkpointNeeded(final boolean enforceCheckpoint,
@@ -142,6 +146,8 @@ final class StateManagerUtil {
                         stateDirectory.unlock(id);
                     }
                 }
+            } else {
+                log.error("Failed to acquire lock while closing the state store for {} task {}", taskType, id);
             }
         } catch (final IOException e) {
             final ProcessorStateException exception = new ProcessorStateException(
@@ -174,7 +180,7 @@ final class StateManagerUtil {
 
             return new TaskId(topicGroupId, partition, namedTopology);
         } catch (final Exception e) {
-            throw new TaskIdFormatException(taskIdStr);
+            throw new TaskIdFormatException(taskIdStr, e);
         }
     }
 
